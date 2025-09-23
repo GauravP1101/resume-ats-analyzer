@@ -134,16 +134,63 @@ TAXONOMY: Dict[str, Set[str]] = {
     "Experiment Tracking": {"exp tracking"},
 }
 
+# Softer category weights (de-tuned)
 CATEGORY_WEIGHTS: Dict[str, float] = {
-    "Languages": 1.0,
-    "Frontend": 0.8,
-    "Backend": 1.0,
-    "Databases": 0.9,
-    "Cloud & DevOps": 1.1,
-    "Data / ML / MLOps": 1.1,
-    "NLP / LLM": 1.0,
-    "Monitoring / Analytics": 0.6,
-    "Testing / Practices": 0.7,
+    "Languages": 0.85,
+    "Frontend": 0.70,
+    "Backend": 0.85,
+    "Databases": 0.80,
+    "Cloud & DevOps": 0.85,
+    "Data / ML / MLOps": 0.90,
+    "NLP / LLM": 0.75,
+    "Monitoring / Analytics": 0.45,
+    "Testing / Practices": 0.50,
+}
+
+# Per-skill priors: ubiquitous skills have smaller influence
+SKILL_PRIOR: Dict[str, float] = {
+    # Dev basics
+    "Git": 0.35,
+    "Agile/Scrum": 0.35,
+    "CI/CD": 0.40,
+    "REST APIs": 0.45,
+    "Debugging": 0.40,
+    "Unit Testing": 0.40,
+    "Integration Testing": 0.40,
+
+    # Cloud basics & logging
+    "AWS": 0.60,
+    "Azure": 0.50,
+    "Google Cloud Platform": 0.50,
+    "Amazon CloudWatch": 0.35,
+    "CloudWatch": 0.35,
+    "Jenkins": 0.45,
+    "GitHub Actions": 0.45,
+    "Docker": 0.55,
+    "Kubernetes": 0.55,
+
+    # Generic data buzzwords
+    "Data Modeling": 0.50,
+    "ETL": 0.50,
+    "Data Warehousing": 0.50,
+    "Data Quality": 0.45,
+
+    # Analytics platforms commonly mentioned
+    "Tableau": 0.45,
+    "Power BI": 0.45,
+}
+
+# Per-category caps: limit JD influence
+CAT_CAP: Dict[str, int] = {
+    "Languages": 4,
+    "Frontend": 4,
+    "Backend": 4,
+    "Databases": 4,
+    "Cloud & DevOps": 4,
+    "Data / ML / MLOps": 5,
+    "NLP / LLM": 3,
+    "Monitoring / Analytics": 3,
+    "Testing / Practices": 3,
 }
 
 # Canonical maps and patterns
@@ -230,65 +277,99 @@ def compare_skills(resume_skills: List[str], jd_skills: List[str]) -> List[str]:
     norm_jd     = {ALIAS2CANON.get(s.lower(), s) for s in jd_skills}
     return sorted(norm_jd - norm_resume)
 
+# ----------------------------- Category helper --------------------------------
+def _category_of(canon: str) -> str:
+    cat_map = [
+        ("Languages", {"Python","Java","JavaScript","TypeScript","SQL","Bash","C","C++"}),
+        ("Frontend", {"React.js","React Native","Next.js","Redux","AngularJS","HTML5","CSS3","Bootstrap","Figma","D3.js"}),
+        ("Backend", {"Node.js","Express.js","Spring Boot","FastAPI","Flask","REST APIs","Microservices Architecture"}),
+        ("Databases", {"PostgreSQL","MySQL","MongoDB","SQLite","Redis","Oracle","Redshift","BigQuery","Cassandra","DynamoDB","Vector Databases","FAISS","Pinecone","Weaviate"}),
+        ("Cloud & DevOps", {"AWS","Azure","Google Cloud Platform","AWS EC2","AWS S3","AWS RDS","AWS Lambda","IAM","CloudWatch","Docker","Kubernetes","EKS","ECS","Terraform","Jenkins","Git","GitHub Actions","Ansible","CI/CD","VPC"}),
+        ("Data / ML / MLOps", {"Scikit-learn","PyTorch","TensorFlow","MLflow","TorchServe","TensorFlow Serving","Feature Stores","Data Modeling","ETL","Data Warehousing","Airflow","Spark","Kafka","Data Quality","Data Governance","Streaming","Kinesis","PubSub","RabbitMQ"}),
+        ("NLP / LLM", {"Natural Language Processing","Large Language Models","Hugging Face Transformers","OpenAI APIs","LangChain","RAG Pipelines","Prompt Engineering","BERT","RoBERTa","GPT"}),
+        ("Monitoring / Analytics", {"Amazon CloudWatch","Prometheus","Grafana","ELK Stack","Elasticsearch","Logstash","Kibana","Tableau","Power BI"}),
+        ("Testing / Practices", {"Unit Testing","Integration Testing","Debugging","TDD","Agile/Scrum","Jest","Cypress","JUnit","Mockito","A/B Testing","Experiment Tracking"}),
+    ]
+    for cat, items in cat_map:
+        if canon in items:
+            return cat
+    return "Other"
+
 # ----------------------------- Rich analyzer ----------------------------------
 def extract_jd_skills(text: str) -> List[str]:
+    """
+    Extract JD skills conservatively, union base + section hits,
+    then cap per category to avoid overfitting to long JDs.
+    """
     if not text:
         return []
     text_clean = _clean_text(text)
-    main = extract_skills(text_clean)
+
+    base = set(extract_skills(text_clean))
+
     sections = re.findall(
         r"(Requirements|Qualifications|What you’ll do|What we look for|Preferred|Must have)[:\s]+(.+?)(?=\n[A-Z][^\n]{0,40}:|\Z)",
         text_clean, flags=re.IGNORECASE | re.DOTALL
     )
-    boosted: Set[str] = set(main)
+    sec_skills: Set[str] = set()
     for _, sec in sections:
-        boosted.update(extract_skills(sec))
-    return sorted(boosted)
+        sec_skills.update(extract_skills(sec))
+
+    combined_sorted = sorted(base | sec_skills)
+
+    # Apply per-category caps
+    per_cat: Dict[str, int] = {}
+    trimmed: List[str] = []
+    for s in combined_sorted:
+        c = _category_of(s)
+        cap = CAT_CAP.get(c, 4)
+        used = per_cat.get(c, 0)
+        if used < cap:
+            trimmed.append(s)
+            per_cat[c] = used + 1
+
+    return trimmed
 
 def coverage_score(resume_skills: List[str], jd_skills: List[str]) -> Tuple[float, Dict[str, List[str]]]:
-    def _category_of(canon: str) -> str:
-        cat_map = [
-            ("Languages", {"Python","Java","JavaScript","TypeScript","SQL","Bash","C","C++"}),
-            ("Frontend", {"React.js","React Native","Next.js","Redux","AngularJS","HTML5","CSS3","Bootstrap","Figma","D3.js"}),
-            ("Backend", {"Node.js","Express.js","Spring Boot","FastAPI","Flask","REST APIs","Microservices Architecture"}),
-            ("Databases", {"PostgreSQL","MySQL","MongoDB","SQLite","Redis","Oracle","Redshift","BigQuery","Cassandra","DynamoDB","Vector Databases","FAISS","Pinecone","Weaviate"}),
-            ("Cloud & DevOps", {"AWS","Azure","Google Cloud Platform","AWS EC2","AWS S3","AWS RDS","AWS Lambda","IAM","CloudWatch","Docker","Kubernetes","EKS","ECS","Terraform","Jenkins","Git","GitHub Actions","Ansible","CI/CD","VPC"}),
-            ("Data / ML / MLOps", {"Scikit-learn","PyTorch","TensorFlow","MLflow","TorchServe","TensorFlow Serving","Feature Stores","Data Modeling","ETL","Data Warehousing","Airflow","Spark","Kafka","Data Quality","Data Governance","Streaming","Kinesis","PubSub","RabbitMQ"}),
-            ("NLP / LLM", {"Natural Language Processing","Large Language Models","Hugging Face Transformers","OpenAI APIs","LangChain","RAG Pipelines","Prompt Engineering","BERT","RoBERTa","GPT"}),
-            ("Monitoring / Analytics", {"Amazon CloudWatch","Prometheus","Grafana","ELK Stack","Elasticsearch","Logstash","Kibana","Tableau","Power BI"}),
-            ("Testing / Practices", {"Unit Testing","Integration Testing","Debugging","TDD","Agile/Scrum","Jest","Cypress","JUnit","Mockito","A/B Testing","Experiment Tracking"}),
-        ]
-        for cat, items in cat_map:
-            if canon in items:
-                return cat
-        return "Other"
-
     resume_set = {ALIAS2CANON.get(s.lower(), s) for s in resume_skills}
     jd_set     = {ALIAS2CANON.get(s.lower(), s) for s in jd_skills}
 
     detail: Dict[str, List[str]] = {"matched": [], "missing": [], "extra": []}
-    cat_req: Dict[str, int] = {}
-    cat_hit: Dict[str, int] = {}
 
-    for s in jd_set:
+    # Build per-category lists to apply caps on the JD side
+    per_cat_skills: Dict[str, List[str]] = {}
+    for s in sorted(jd_set):
         cat = _category_of(s)
-        cat_req[cat] = cat_req.get(cat, 0) + 1
+        per_cat_skills.setdefault(cat, []).append(s)
+
+    # Apply category caps
+    jd_trimmed: Set[str] = set()
+    for cat, skills in per_cat_skills.items():
+        cap = CAT_CAP.get(cat, 4)
+        jd_trimmed.update(skills[:cap])
+
+    # Fill details
+    for s in sorted(jd_trimmed):
         if s in resume_set:
             detail["matched"].append(s)
-            cat_hit[cat] = cat_hit.get(cat, 0) + 1
         else:
             detail["missing"].append(s)
-
-    for s in resume_set - jd_set:
+    for s in sorted(resume_set - jd_trimmed):
         detail["extra"].append(s)
 
+    # Weighted scoring: category weights * per-skill prior
     total_weight = 0.0
     got_weight   = 0.0
-    for cat, req in cat_req.items():
-        w = CATEGORY_WEIGHTS.get(cat, 1.0)
-        total_weight += w * req
-        got_weight   += w * cat_hit.get(cat, 0)
+    for s in jd_trimmed:
+        cat_w = CATEGORY_WEIGHTS.get(_category_of(s), 0.8)
+        skill_w = SKILL_PRIOR.get(s, 1.0)
+        w = cat_w * skill_w
+        total_weight += w
+        if s in resume_set:
+            got_weight += w
+
     score = 0.0 if total_weight == 0 else round(100.0 * got_weight / total_weight, 2)
+
     for k in detail:
         detail[k] = sorted(detail[k])
     return score, detail
@@ -351,7 +432,6 @@ def highlight_text_with_skills(
         canon_set = {ALIAS2CANON.get(s.lower(), s) for s in skills_to_highlight}
         mentions = [m for m in mentions if m["canon"] in canon_set]
 
-    # Build highlighted HTML safely
     out = []
     i = 0
     for m in mentions:
@@ -371,8 +451,7 @@ def highlight_text_with_skills(
 
 def highlight_resume_and_jd(resume_text: str, jd_text: str) -> Dict[str, object]:
     """
-    Convenience: compute matched/missing skills and produce highlighted HTML
-    for both resume and JD. Only matched canonicals are highlighted to reduce noise.
+    Compute matched/missing skills and produce highlighted HTML for both resume and JD.
     """
     rs = extract_skills(resume_text)
     js = extract_jd_skills(jd_text)
