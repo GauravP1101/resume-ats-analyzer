@@ -1,43 +1,68 @@
 import gradio as gr
+import re
 from PyPDF2 import PdfReader
 from sentence_transformers import SentenceTransformer
-import faiss
 import numpy as np
+from skills import extract_skills, compare_skills
 
-# Load embedding model
-model = SentenceTransformer('all-MiniLM-L6-v2')
+model = SentenceTransformer("all-MiniLM-L6-v2")
 
 def extract_text_from_pdf(pdf):
     reader = PdfReader(pdf)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() or ""
-    return text
+    return "\n".join([p.extract_text() or "" for p in reader.pages])
 
-def get_embedding(text):
-    return model.encode([text], normalize_embeddings=True)[0]
+def split_sections(text):
+    headers = re.finditer(r'(Education|Experience|Projects|Skills|Technical Skills):', text)
+    sections, last_idx, last_title = {}, 0, "Other"
+    for m in headers:
+        start, name = m.start(), m.group(1)
+        if last_title != "Other":
+            sections[last_title] = text[last_idx:start].strip()
+        last_idx, last_title = start + len(name) + 1, name
+    sections[last_title] = text[last_idx:].strip()
+    return sections
 
-def find_similarity(resume_text, jd_text):
-    emb_resume = get_embedding(resume_text)
-    emb_jd = get_embedding(jd_text)
-    score = np.dot(emb_resume, emb_jd) / (np.linalg.norm(emb_resume) * np.linalg.norm(emb_jd))
-    return float(score)
+def chunk_text(text, size=900, overlap=100):
+    words = text.split()
+    out, idx = [], 0
+    while idx < len(words):
+        chunk = " ".join(words[idx:idx+size])
+        out.append(chunk)
+        idx += size - overlap
+    return out
 
-def analyze_resume(pdf_file, jd_text):
+def get_embeddings(texts):
+    return model.encode(texts, normalize_embeddings=True)
+
+def section_similarity(resume_chunks, jd_chunks):
+    re = get_embeddings(resume_chunks)
+    jd = get_embeddings(jd_chunks)
+    scores = [np.max(np.dot(re, emb) / (np.linalg.norm(re, axis=1) * np.linalg.norm(emb))) for emb in jd]
+    return np.mean(scores), scores
+
+def analyze(pdf_file, jd_text):
     resume_text = extract_text_from_pdf(pdf_file)
-    if not resume_text.strip():
-        return "Error: Could not extract text from PDF.", None
-    score = find_similarity(resume_text, jd_text)
-    return f"Similarity Score: {score:.3f}", resume_text
+    sections = split_sections(resume_text)
+    jd_chunks = chunk_text(jd_text)
+    sec_scores = {sec: round(section_similarity(chunk_text(txt), jd_chunks)[0]*100,2)
+                  for sec, txt in sections.items()}
+    resume_skills, jd_skills = extract_skills(resume_text), extract_skills(jd_text)
+    missing_skills = compare_skills(resume_skills, jd_skills)
+    summary = (
+        f"**Overall score**: {round(section_similarity(chunk_text(resume_text), jd_chunks)[0]*100,2)}%\n" +
+        "\n".join([f"{k}: {v}%" for k,v in sec_scores.items()]) +
+        f"\nResume skills: {', '.join(resume_skills)}\nJD skills: {', '.join(jd_skills)}\nMissing: {', '.join(missing_skills)}"
+    )
+    return summary, resume_text, ", ".join(missing_skills), str(sec_scores)
 
 with gr.Blocks() as demo:
-    gr.Markdown("## ATS Resume Analyzer")
-    with gr.Row():
-        pdf_input = gr.File(label="Upload Resume PDF")
-        jd_input = gr.Textbox(label="Paste Job Description", lines=6)
-    score_output = gr.Textbox(label="Similarity Score / Error", show_copy_button=True)
-    resume_output = gr.Textbox(label="Extracted Resume Text", show_copy_button=True)
-    analyze_btn = gr.Button("Analyze")
-    analyze_btn.click(analyze_resume, inputs=[pdf_input, jd_input], outputs=[score_output, resume_output])
-
+    gr.Markdown("# Enhanced ATS Resume Analyzer")
+    pdf_input = gr.File(label="Upload Resume PDF")
+    jd_input = gr.Textbox(label="Paste Job Description")
+    out_summary = gr.Markdown()
+    out_resume = gr.Textbox(show_copy_button=True)
+    out_missing = gr.Textbox(label="Missing Skills", show_copy_button=True)
+    out_sec_scores = gr.Textbox(label="Section Scores", show_copy_button=True)
+    btn = gr.Button("Analyze")
+    btn.click(analyze, inputs=[pdf_input, jd_input], outputs=[out_summary, out_resume, out_missing, out_sec_scores])
 demo.launch()
