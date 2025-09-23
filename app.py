@@ -76,11 +76,16 @@ def analyze(pdf_file, jd_text, show_resume):
     return overview, missing_md, section_md, resume_view, skills_display
 
 with gr.Blocks(theme=gr.themes.Base()) as demo:
-    gr.Image("https://img.icons8.com/color/96/000000/open-resume.png", elem_id="logo", show_label=False)
-    gr.Markdown("""
-    # 🎯 ATS Resume Analyzer
-    *Upload your resume PDF, paste a job description, and get instant ATS match score, missing skill highlights, and resume preview — optimized for software engineering roles.*
-    """)
+    gr.Image(
+    value="https://img.icons8.com/color/96/000000/open-resume.png",
+    show_label=False,
+    elem_id="logo"
+)
+
+    gr.Markdown(
+    "<img src='https://img.icons8.com/color/96/000000/open-resume.png' style='height:64px;margin-right:12px;vertical-align:middle;'/> <span style='font-size:2em;font-weight:bold;vertical-align:middle'>ATS Resume Analyzer</span>"
+)
+
     with gr.Row():
         pdf_input = gr.File(label="Upload Resume PDF")
         jd_input = gr.Textbox(label="Paste Job Description", lines=8, interactive=True)
