@@ -1,0 +1,9 @@
+gradio
+PyPDF2
+sentence-transformers
+faiss-cpu
+nltk
+spacy
+regex
+pandas
+scikit-learn
