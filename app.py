@@ -1,95 +1,151 @@
 import gradio as gr
+import numpy as np
 from PyPDF2 import PdfReader
 from sentence_transformers import SentenceTransformer
-import numpy as np
-from utils.skills import extract_skills, compare_skills
-import re
 
+from utils.skills import extract_skills, compare_skills
+from utils.ui_enhancements import score_badge, pill, base_css
+
+# --------------------------- Model -------------------------------------------
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-def extract_text_from_pdf(pdf):
+# --------------------------- Helpers -----------------------------------------
+def extract_text_from_pdf(pdf) -> str:
     reader = PdfReader(pdf)
-    return "\n".join([p.extract_text() or "" for p in reader.pages])
+    return "\n".join([(p.extract_text() or "") for p in reader.pages])
 
-def chunk_text(text, size=900, overlap=100):
+def chunk_text(text: str, size: int = 900, overlap: int = 100):
     words = text.split()
-    out, idx = [], 0
-    while idx < len(words):
-        chunk = " ".join(words[idx:idx+size])
-        out.append(chunk)
-        idx += size - overlap
-    return out
+    if not words:
+        return []
+    chunks, i = [], 0
+    step = max(1, size - overlap)
+    while i < len(words):
+        chunks.append(" ".join(words[i : i + size]))
+        i += step
+    return chunks
 
 def get_embeddings(texts):
+    if not texts:
+        return np.zeros((0, 384), dtype=np.float32)  # model dim for MiniLM
     return model.encode(texts, normalize_embeddings=True)
 
 def section_similarity(resume_chunks, jd_chunks):
-    re = get_embeddings(resume_chunks)
-    jd = get_embeddings(jd_chunks)
-    scores = [np.max(np.dot(re, emb) / (np.linalg.norm(re, axis=1) * np.linalg.norm(emb))) for emb in jd]
-    return np.mean(scores), scores
+    """
+    Max cosine similarity of each JD chunk against all resume chunks.
+    Returns (mean_score_0to1, per_jd_scores)
+    """
+    R = get_embeddings(resume_chunks)  # (nr, d), already L2-normalized
+    J = get_embeddings(jd_chunks)      # (nj, d)
+    if R.size == 0 or J.size == 0:
+        return 0.0, []
+    # cosine since both are normalized → dot product
+    sims = R @ J.T  # (nr, nj)
+    per_jd = np.max(sims, axis=0)  # best resume match for each JD chunk
+    return float(np.mean(per_jd)), per_jd.tolist()
 
-def analyze(pdf_file, jd_text, show_resume):
+# --------------------------- Core --------------------------------------------
+def analyze(pdf_file, jd_text: str, show_resume: bool):
+    if pdf_file is None:
+        return ("<b style='color:#991b1b'>Please upload a PDF resume.</b>", "", "", "", "")
+
     resume_text = extract_text_from_pdf(pdf_file)
     if not resume_text.strip():
-        return (
-            "Error: Resume text not extracted. Please try with a different PDF.",
-            "", "", "", ""
-        )
+        return ("<b style='color:#991b1b'>Error: Resume text could not be extracted. Try another PDF.</b>", "", "", "", "")
+
+    jd_text = (jd_text or "").strip()
+    if not jd_text:
+        return ("<b style='color:#991b1b'>Please paste a job description to analyze.</b>", "", "", "", "")
+
+    # Skills
     resume_skills = extract_skills(resume_text)
     jd_skills = extract_skills(jd_text)
     missing_skills = compare_skills(resume_skills, jd_skills)
+    matched = sorted(set(resume_skills) & set(jd_skills))
+    total = len(set(jd_skills))
+
+    # Similarity
     jd_chunks = chunk_text(jd_text)
     resume_chunks = chunk_text(resume_text)
-    overall_score = round(section_similarity(resume_chunks, jd_chunks)[0] * 100, 2)
+    overall = round(section_similarity(resume_chunks, jd_chunks)[0] * 100, 2)
 
-    # Outputs
-    overview = (
-        f"<h2 style='color:#2563eb;'>📊 ATS Match Score:</h2><p style='font-size:1.7em;color:green;'>{overall_score}%</p>"
-        f"<hr><h4>Resume Skills Matched:</h4> {len(set(resume_skills) & set(jd_skills))} / {len(jd_skills)}"
-        f"<hr><details><summary>JD Skills Coverage</summary>{', '.join(resume_skills)}</details>"
-    )
-    missing_md = (
-        "<h2 style='color:#be123c;'>🔎 Missing Skills for ATS</h2>" +
-        "<ul>" +
-        "".join([f"<li style='color:#be123c;'>{sk}</li>" for sk in missing_skills]) +
-        "</ul>" if missing_skills else
-        "<span style='color:green;'>✔️ All ATS skills covered!</span>"
-    )
-    section_md = (
-        "<h2>Resume Preview</h2>"
-        f"<details><summary>Show Extracted Text</summary><pre style='background:#f3f4f6;'>{resume_text[:2500]}</pre></details>"
-        if show_resume else ""
-    )
-    # (You can add advanced matching details and per-section scores here)
-    resume_view = (
-        "<h2>Resume Raw Text</h2>"
-        f"<pre style='background:#f3f4f6;'>{resume_text[:5000]}</pre>"
-        if show_resume else ""
-    )
+    # ---------------- UI HTML blocks ----------------
+    # Overview
+    overview = f"""
+    {score_badge(overall)}
+    <div style="margin-top:14px"></div>
+    <div class="card" style="padding:14px">
+      <div class="h2">Skills Summary</div>
+      <div class="hint" style="margin:6px 0 10px">Matched {len(matched)} of {total} JD skills</div>
+      <div>{"".join(pill(s, True) for s in matched) or "<span class='hint'>No direct skill overlaps found.</span>"}</div>
+    </div>
+    """
+
+    # Missing skills
+    if missing_skills:
+        missing_md = (
+            "<div class='h2' style='color:#991b1b'>Missing Skills for ATS</div>"
+            + "<div style='margin-top:6px'>"
+            + "".join(pill(sk, False) for sk in missing_skills)
+            + "</div>"
+        )
+    else:
+        missing_md = "<div style='color:#065f46;font:600 14px Inter,system-ui'>✔ All JD skills are represented in your resume.</div>"
+
+    # Preview (trimmed text)
+    section_md = ""
+    if show_resume:
+        snippet = resume_text[:3000].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        section_md = f"""
+        <div class="h2">Resume Preview</div>
+        <details open style="margin-top:8px">
+          <summary class="hint">Show Extracted Text (first 3000 chars)</summary>
+          <pre style="background:#f8fafc;border-radius:12px;padding:14px;white-space:pre-wrap">{snippet}</pre>
+        </details>
+        """
+
+    # Raw (longer)
+    resume_view = ""
+    if show_resume:
+        raw = resume_text[:8000].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        resume_view = f"<pre style='background:#f8fafc;border-radius:12px;padding:14px;white-space:pre-wrap'>{raw}</pre>"
+
+    # Skills panel
     skills_display = (
-        "<h3 style='color:#3b82f6;'>Resume Skills</h3>"
-        + " ".join([f"<span style='color:green; font-weight: bold;'>{skill}</span>" for skill in resume_skills])
-        + "<br><h3 style='color:#be123c;'>JD Skills</h3>"
-        + " ".join([f"<span style='color:#be123c;'>{skill}</span>" for skill in jd_skills])
+        "<div class='h2' style='color:#1f2937'>Skills</div>"
+        "<div style='margin:8px 0'><b>Resume:</b><br>"
+        + ("".join(pill(s, True) for s in resume_skills) or "<span class='hint'>None found.</span>")
+        + "</div><div style='margin-top:8px'><b>Job Description:</b><br>"
+        + ("".join(pill(s, True) for s in jd_skills) or "<span class='hint'>None found.</span>")
+        + "</div>"
     )
+
     return overview, missing_md, section_md, resume_view, skills_display
 
-with gr.Blocks(theme=gr.themes.Base()) as demo:
-    gr.Image(value="logo.png", show_label=False)
+# --------------------------- Gradio App ---------------------------------------
+with gr.Blocks(theme=gr.themes.Soft(), css=base_css()) as demo:
+    gr.Markdown(f"""
+    <div class="wrap">
+      <div class="h1">ATS Resume Analyzer</div>
+      <div class="hint">Upload your resume and paste a job description to see a clear, defensible ATS score with missing skills.</div>
+    </div>
+    """)
 
+    with gr.Row(elem_classes=["wrap"], equal_height=True):
+        with gr.Column(scale=1):
+            with gr.Group(elem_classes=["card", "upload-box"]):
+                gr.Markdown("<div class='h2'>Upload Resume PDF</div><div class='hint'>Drag & drop or click to select</div>")
+                pdf_input = gr.File(label=None, file_types=[".pdf"], type="filepath")
 
-    gr.Markdown(
-    "<img src='https://img.icons8.com/color/96/000000/document.png' style='height:64px;margin-right:10px;vertical-align:middle;'/> <span style='font-size:2em;font-weight:bold;vertical-align:middle'>ATS Resume Analyzer</span>"
-)
+        with gr.Column(scale=1):
+            with gr.Group(elem_classes=["card"]):
+                gr.Markdown("<div class='h2'>Paste Job Description</div>")
+                jd_input = gr.Textbox(label=None, lines=14, placeholder="Paste the JD here…", elem_classes=["textarea"])
 
-
-    with gr.Row():
-        pdf_input = gr.File(label="Upload Resume PDF")
-        jd_input = gr.Textbox(label="Paste Job Description", lines=8, interactive=True)
-    with gr.Row():
+    with gr.Row(elem_classes=["wrap"]):
         show_resume = gr.Checkbox(label="Show full resume text in output", value=False)
-    with gr.Tabs():
+
+    with gr.Tabs(elem_classes=["wrap", "tabs"]):
         with gr.TabItem("Overview"):
             out_overview = gr.HTML()
         with gr.TabItem("Missing Skills"):
@@ -100,6 +156,15 @@ with gr.Blocks(theme=gr.themes.Base()) as demo:
             out_resume = gr.HTML()
         with gr.TabItem("Skills"):
             out_skills = gr.HTML()
-    submit = gr.Button("🔍 Analyze and Highlight", size="lg")
-    submit.click(analyze, inputs=[pdf_input, jd_input, show_resume], outputs=[out_overview, out_missing, out_section, out_resume, out_skills])
-demo.launch()
+
+    with gr.Row(elem_classes=["wrap", "btn-lg"]):
+        submit = gr.Button("🔎 Analyze and Highlight", variant="primary")
+
+    submit.click(
+        analyze,
+        inputs=[pdf_input, jd_input, show_resume],
+        outputs=[out_overview, out_missing, out_section, out_resume, out_skills],
+    )
+
+if __name__ == "__main__":
+    demo.launch()
