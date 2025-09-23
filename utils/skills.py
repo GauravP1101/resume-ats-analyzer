@@ -6,7 +6,6 @@ import difflib
 from typing import Dict, List, Set, Tuple
 
 # ----------------------------- Taxonomy ---------------------------------------
-# Canonical -> set(aliases/variants); add freely as you see patterns in JDs.
 TAXONOMY: Dict[str, Set[str]] = {
     # Languages
     "Python": {"py"},
@@ -135,7 +134,6 @@ TAXONOMY: Dict[str, Set[str]] = {
     "Experiment Tracking": {"exp tracking"},
 }
 
-# Optional category weights (tweak as you like)
 CATEGORY_WEIGHTS: Dict[str, float] = {
     "Languages": 1.0,
     "Frontend": 0.8,
@@ -148,7 +146,7 @@ CATEGORY_WEIGHTS: Dict[str, float] = {
     "Testing / Practices": 0.7,
 }
 
-# Build canonical sets and a flat alias→canonical map
+# Canonical maps and patterns
 CANONICAL: Set[str] = set(TAXONOMY.keys())
 ALIAS2CANON: Dict[str, str] = {}
 for canon, aliases in TAXONOMY.items():
@@ -156,7 +154,7 @@ for canon, aliases in TAXONOMY.items():
     for a in aliases:
         ALIAS2CANON[a.lower()] = canon
 
-# Precompile regex for exact word-boundary matches
+# exact word/alias patterns (word-ish boundaries that allow +/#/.)
 EXACT_PATTERNS: Dict[str, re.Pattern] = {
     canon: re.compile(rf"(?<![#\w]){re.escape(canon)}(?![-\w])", re.IGNORECASE) for canon in CANONICAL
 }
@@ -169,15 +167,15 @@ for alias, canon in ALIAS2CANON.items():
 
 # ----------------------------- Normalization ----------------------------------
 def _clean_text(s: str) -> str:
-    s = s.replace("\u00a0", " ")  # non-breaking space
-    s = re.sub(r"[•·●▪►▶]+", " ", s)  # bullets
+    s = s.replace("\u00a0", " ")
+    s = re.sub(r"[•·●▪►▶]+", " ", s)
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
 def _normalize_token(s: str) -> str:
     s = s.lower().strip()
     s = s.replace("/", " ").replace("-", " ")
-    s = re.sub(r"[^\w\s.+#]", "", s)  # keep word chars and . + #
+    s = re.sub(r"[^\w\s.+#]", "", s)
     return s
 
 def _ngrams(words: List[str], n: int) -> List[str]:
@@ -185,24 +183,18 @@ def _ngrams(words: List[str], n: int) -> List[str]:
 
 # ----------------------------- Extraction -------------------------------------
 def extract_skills(text: str) -> List[str]:
-    """
-    Backwards-compatible API: returns list of canonical skills found in `text`.
-    Uses exact match first; then fuzzy on 1–3 gram windows.
-    """
     if not text:
         return []
-
     text_clean = _clean_text(text)
     found: Set[str] = set()
 
-    # 1) Exact matches (canonical + aliases)
+    # 1) exact hits (canon + aliases)
     for key, pat in EXACT_PATTERNS.items():
-        canon = key.split("__", 1)[0]  # strip alias key
+        canon = key.split("__", 1)[0]
         if pat.search(text_clean):
             found.add(canon)
 
-    # 2) Fuzzy matches on n-grams to catch spelling/format variants
-    # Build candidate windows
+    # 2) fuzzy windows (for extraction only)
     tokens = [_normalize_token(t) for t in re.findall(r"[A-Za-z0-9+.#]+", text_clean)]
     grams = set(tokens)
     for n in (2, 3):
@@ -211,10 +203,8 @@ def extract_skills(text: str) -> List[str]:
     def _fuzzy_hit(window: str, target: str) -> bool:
         if not window or not target:
             return False
-        # Tighten threshold for short targets to avoid false positives
         t = target.lower()
         w = window.lower()
-        # quick contain check
         if t in w:
             return True
         ratio = difflib.SequenceMatcher(a=w, b=t).ratio()
@@ -225,37 +215,27 @@ def extract_skills(text: str) -> List[str]:
         else:
             return ratio >= 0.92
 
-    # Try fuzzy against aliases + canonicals
     for canon in CANONICAL:
         targets = {canon.lower(), *[a.lower() for a in TAXONOMY[canon]]}
         if canon in found:
             continue
-        # speed: accept if any window is close to any target
-        hit = any(_fuzzy_hit(g, t) for g in grams for t in targets)
-        if hit:
+        if any(_fuzzy_hit(g, t) for g in grams for t in targets):
             found.add(canon)
 
     return sorted(found)
 
 # ----------------------------- JD comparison ----------------------------------
 def compare_skills(resume_skills: List[str], jd_skills: List[str]) -> List[str]:
-    """Backwards-compatible: returns list of missing JD skills."""
     norm_resume = {ALIAS2CANON.get(s.lower(), s) for s in resume_skills}
     norm_jd     = {ALIAS2CANON.get(s.lower(), s) for s in jd_skills}
     return sorted(norm_jd - norm_resume)
 
 # ----------------------------- Rich analyzer ----------------------------------
 def extract_jd_skills(text: str) -> List[str]:
-    """
-    Same as extract_skills but with extra JD-specific hints:
-    we look into sections labeled 'Requirements', 'Qualifications', etc.
-    """
     if not text:
         return []
     text_clean = _clean_text(text)
     main = extract_skills(text_clean)
-
-    # section boost
     sections = re.findall(
         r"(Requirements|Qualifications|What you’ll do|What we look for|Preferred|Must have)[:\s]+(.+?)(?=\n[A-Z][^\n]{0,40}:|\Z)",
         text_clean, flags=re.IGNORECASE | re.DOTALL
@@ -266,10 +246,6 @@ def extract_jd_skills(text: str) -> List[str]:
     return sorted(boosted)
 
 def coverage_score(resume_skills: List[str], jd_skills: List[str]) -> Tuple[float, Dict[str, List[str]]]:
-    """
-    Weighted coverage score in [0,100] plus detail breakdown.
-    """
-    # Map each skill to a coarse category (best-effort; fallback to 'Other')
     def _category_of(canon: str) -> str:
         cat_map = [
             ("Languages", {"Python","Java","JavaScript","TypeScript","SQL","Bash","C","C++"}),
@@ -291,7 +267,6 @@ def coverage_score(resume_skills: List[str], jd_skills: List[str]) -> Tuple[floa
     jd_set     = {ALIAS2CANON.get(s.lower(), s) for s in jd_skills}
 
     detail: Dict[str, List[str]] = {"matched": [], "missing": [], "extra": []}
-    # per-category tallies
     cat_req: Dict[str, int] = {}
     cat_hit: Dict[str, int] = {}
 
@@ -307,7 +282,6 @@ def coverage_score(resume_skills: List[str], jd_skills: List[str]) -> Tuple[floa
     for s in resume_set - jd_set:
         detail["extra"].append(s)
 
-    # weighted score
     total_weight = 0.0
     got_weight   = 0.0
     for cat, req in cat_req.items():
@@ -315,15 +289,11 @@ def coverage_score(resume_skills: List[str], jd_skills: List[str]) -> Tuple[floa
         total_weight += w * req
         got_weight   += w * cat_hit.get(cat, 0)
     score = 0.0 if total_weight == 0 else round(100.0 * got_weight / total_weight, 2)
-    # keep lists sorted for stable display
     for k in detail:
         detail[k] = sorted(detail[k])
     return score, detail
 
 def analyze_skills(resume_text: str, jd_text: str) -> Dict[str, object]:
-    """
-    One-call helper used by the UI if you want rich skill analytics.
-    """
     rs = extract_skills(resume_text)
     js = extract_jd_skills(jd_text)
     score, detail = coverage_score(rs, js)
@@ -334,4 +304,89 @@ def analyze_skills(resume_text: str, jd_text: str) -> Dict[str, object]:
         "missing": detail["missing"],
         "extra": detail["extra"],
         "coverage_score": score,
+    }
+
+# ========================== NEW: highlighting helpers =========================
+def _html_escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def find_skill_mentions(text: str) -> List[Dict[str, object]]:
+    """
+    Return spans of exact/alias skill mentions in `text`.
+    Each item: {"canon": str, "alias": str, "start": int, "end": int}
+    """
+    mentions: List[Dict[str, object]] = []
+    if not text:
+        return mentions
+    for key, pat in EXACT_PATTERNS.items():
+        canon = key.split("__", 1)[0]
+        alias = key.split("__", 1)[1] if "__" in key else canon
+        for m in pat.finditer(text):
+            mentions.append({"canon": canon, "alias": alias, "start": m.start(), "end": m.end()})
+    # sort, dedupe overlaps by preferring longer spans (more specific)
+    mentions.sort(key=lambda x: (x["start"], -(x["end"] - x["start"])))
+    non_overlap: List[Dict[str, object]] = []
+    last_end = -1
+    for m in mentions:
+        if m["start"] >= last_end:
+            non_overlap.append(m)
+            last_end = m["end"]
+    return non_overlap
+
+def highlight_text_with_skills(
+    text: str,
+    skills_to_highlight: List[str] | Set[str] | None = None,
+    mark_class: str = "skill-mark",
+    color: str = "#fef3c7",   # amber-100
+    border: str = "#f59e0b"   # amber-500
+) -> Tuple[str, List[Dict[str, object]]]:
+    """
+    Return (html, mentions). Wrap matched skills in <mark> with a soft background.
+    If `skills_to_highlight` is provided, only those canonicals are highlighted.
+    """
+    if not text:
+        return "", []
+    mentions = find_skill_mentions(text)
+    if skills_to_highlight:
+        canon_set = {ALIAS2CANON.get(s.lower(), s) for s in skills_to_highlight}
+        mentions = [m for m in mentions if m["canon"] in canon_set]
+
+    # Build highlighted HTML safely
+    out = []
+    i = 0
+    for m in mentions:
+        if i < m["start"]:
+            out.append(_html_escape(text[i:m["start"]]))
+        frag = _html_escape(text[m["start"]:m["end"]])
+        out.append(
+            f"<mark class='{mark_class}' "
+            f"style='background:{color}; color:inherit; border:1px solid {border}; "
+            f"border-radius:4px; padding:0 2px;'"
+            f" title='{_html_escape(m['canon'])}'>"
+            f"{frag}</mark>"
+        )
+        i = m["end"]
+    out.append(_html_escape(text[i:]))
+    return "".join(out), mentions
+
+def highlight_resume_and_jd(resume_text: str, jd_text: str) -> Dict[str, object]:
+    """
+    Convenience: compute matched/missing skills and produce highlighted HTML
+    for both resume and JD. Only matched canonicals are highlighted to reduce noise.
+    """
+    rs = extract_skills(resume_text)
+    js = extract_jd_skills(jd_text)
+    matched = sorted(set(rs) & set(js))
+    missing = sorted(set(js) - set(rs))
+
+    resume_html, resume_mentions = highlight_text_with_skills(resume_text, matched)
+    jd_html, jd_mentions         = highlight_text_with_skills(jd_text, matched)
+
+    return {
+        "matched": matched,
+        "missing": missing,
+        "resume_html": resume_html,
+        "jd_html": jd_html,
+        "resume_mentions": resume_mentions,
+        "jd_mentions": jd_mentions,
     }
