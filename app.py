@@ -23,14 +23,9 @@ except Exception:
 from utils.skills import (
     extract_skills,
     compare_skills,
-    # optional richer report (if you pasted the advanced skills.py)
-    analyze_skills,
-    # highlighter helpers
-    highlight_text_with_skills,
+    analyze_skills,                 # weighted coverage
+    highlight_text_with_skills,     # highlighter helpers
 )
-# If you didn't paste the richer skills.py, import errors will happen.
-# In that case, comment out analyze_skills/highlight_text_with_skills lines above,
-# or add simple fallbacks here.
 
 # --- UI atoms -----------------------------------------------------------------
 from utils.ui_enhancements import score_badge, pill, base_css
@@ -141,15 +136,32 @@ def _lenient_unify(resume_sk: Set[str], jd_sk: Set[str], ratio: float = 0.80) ->
     rem_r = [r.lower() for r in resume_sk]
     rem_j = [j.lower() for j in jd_sk]
     for j in rem_j:
-        # pick best close match from resume skills
         best = difflib.get_close_matches(j, rem_r, n=1, cutoff=ratio)
         if best:
-            # unify with original canonical casing if present
-            # find the original strings that lower() to these
             j_orig = next((x for x in jd_sk if x.lower() == j), j)
             r_orig = next((x for x in resume_sk if x.lower() == best[0]), best[0])
             matched.add(j_orig if len(j_orig) >= len(r_orig) else r_orig)
     return matched
+
+
+# ---------- Calibrated ATS score ----------------------------------------------
+def calibrate_confidence(similarity_pct: float, coverage_pct: float, lenient: bool) -> float:
+    """
+    Blend embedding similarity with weighted skill coverage from skills.py,
+    then compress so typical blends sit in the 40s (not inflated).
+    """
+    # Emphasize coverage (de-tuned, capped) over embeddings
+    blended = 0.35 * float(similarity_pct) + 0.65 * float(coverage_pct)
+
+    # Compression & offset to tame high numbers from keyword-y JDs
+    # Examples: blended 60 -> ~41; 50 -> ~33; 70 -> ~50
+    score = 0.85 * blended - 10.0
+
+    # Lenient toggle gives a small nudge, not a big inflation
+    if lenient:
+        score += 1.5
+
+    return round(max(0.0, min(100.0, score)), 2)
 
 
 # ============================== Core Handler ==================================
@@ -170,12 +182,11 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
     resume_chunks = chunk_text_tokens(resume_text, max_tokens=256, overlap=32)
     jd_chunks     = chunk_text_tokens(jd_text,     max_tokens=256, overlap=32)
 
-    # Embedding similarity score
-    overall = round(section_similarity(resume_chunks, jd_chunks)[0] * 100, 2)
+    # Embedding similarity (reference signal)
+    _similarity_pct = round(section_similarity(resume_chunks, jd_chunks)[0] * 100, 2)
 
     # Skills
     resume_sk = set(extract_skills(resume_text))
-    # Use richer JD extraction if available
     try:
         from utils.skills import extract_jd_skills
         jd_sk = set(extract_jd_skills(jd_text))
@@ -187,17 +198,19 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
     missing = sorted(jd_sk - set(matched))
     total_jd = len(jd_sk)
 
-    # Optional weighted coverage (if you added it)
+    # Weighted coverage (from skills.py)
     coverage_line = ""
     try:
         report = analyze_skills(resume_text, jd_text)
-        cov = report.get("coverage_score", 0.0)
-        # if lenient, nudge coverage slightly (friendlier presentation)
+        cov = float(report.get("coverage_score", 0.0))
         if lenient and cov < 100:
-            cov = min(100.0, round(cov + 3.0, 2))  # soft boost
+            cov = min(100.0, round(cov + 1.0, 2))  # tiny nudge only
         coverage_line = f"<div class='hint'>Weighted skill coverage: <b>{cov}%</b>{' • Lenient' if lenient else ''}</div>"
     except Exception:
-        pass
+        cov = 0.0  # fallback
+
+    # Final calibrated ATS score
+    final_score = calibrate_confidence(_similarity_pct, cov, lenient)
 
     r_words = len(resume_text.split())
     j_words = len(jd_text.split())
@@ -205,11 +218,13 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
     # ---------------- UI HTML blocks ----------------
     # Overview
     overview = f"""
-    {score_badge(overall)}
+    {score_badge(final_score)}
     <div class="result-card" style="margin-top:12px">
       <div class="h2">Skills Summary{(' — Lenient matching' if lenient else '')}</div>
       {coverage_line}
       <div class="hint" style="margin-top:6px">
+        <span title="Embedding similarity (reference only)">Similarity: <b>{_similarity_pct}%</b></span> •
+        Weighted coverage: <b>{cov}%</b> •
         Matched <b>{len(matched)}</b> of <b>{total_jd}</b> JD skills •
         Resume words: <b>{r_words}</b> • JD words: <b>{j_words}</b>
       </div>
@@ -231,7 +246,6 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
         missing_md = "<div style='color:#065f46;font:600 14px Inter,system-ui'>✔ All JD skills are represented in your resume.</div>"
 
     # Highlights (inline <mark>) for matched skills
-    # We highlight using the matched set (lenient-aware) so the view matches the counts above.
     try:
         resume_h_html, _ = highlight_text_with_skills(resume_text, matched, color="#fef3c7", border="#f59e0b")
         jd_h_html, _     = highlight_text_with_skills(jd_text, matched, color="#dbf4ff", border="#38bdf8")
@@ -242,7 +256,6 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
         <pre style="white-space:pre-wrap">{jd_h_html}</pre>
         """
     except Exception:
-        # Fallback: plain preview if highlighter is unavailable
         highlights_html = ""
 
     # Preview & Raw (optional)

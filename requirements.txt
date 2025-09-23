@@ -2,9 +2,10 @@ gradio
 PyPDF2
 sentence-transformers
 faiss-cpu
+pymupdf
 nltk
 spacy
 regex
 pandas
 scikit-learn
-pymupdf     
+     
