@@ -76,15 +76,13 @@ def analyze(pdf_file, jd_text, show_resume):
     return overview, missing_md, section_md, resume_view, skills_display
 
 with gr.Blocks(theme=gr.themes.Base()) as demo:
-    gr.Image(
-    value="https://img.icons8.com/color/96/000000/open-resume.png",
-    show_label=False,
-    elem_id="logo"
-)
+    gr.Image(value="logo.png", show_label=False)
+
 
     gr.Markdown(
-    "<img src='https://img.icons8.com/color/96/000000/open-resume.png' style='height:64px;margin-right:12px;vertical-align:middle;'/> <span style='font-size:2em;font-weight:bold;vertical-align:middle'>ATS Resume Analyzer</span>"
+    "<img src='https://img.icons8.com/color/96/000000/document.png' style='height:64px;margin-right:10px;vertical-align:middle;'/> <span style='font-size:2em;font-weight:bold;vertical-align:middle'>ATS Resume Analyzer</span>"
 )
+
 
     with gr.Row():
         pdf_input = gr.File(label="Upload Resume PDF")
