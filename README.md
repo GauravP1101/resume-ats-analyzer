@@ -12,7 +12,6 @@ pinned: false
 # 📄 Resume ATS Analyzer
 
 [![Open in Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Open%20in%20Spaces-blue?logo=huggingface&logoColor=white)](https://huggingface.co/spaces/Gauravp1101/resume-ats-analyzer)
-[![Duplicate this Space](https://img.shields.io/badge/Duplicate-Resume%20ATS%20Analyzer-8A2BE2?logo=huggingface&logoColor=white)](https://huggingface.co/spaces/Gauravp1101/resume-ats-analyzer?duplicate=true)
 
 A **resume analyzer** that matches resumes to job descriptions, highlights missing ATS skills, and provides a **calibrated ATS score**.  
 Built with **Gradio**, **SentenceTransformers**, and a custom **skills taxonomy**.
