@@ -1,14 +1,3 @@
----
-title: Resume ATS Analyzer
-emoji: 📄
-colorFrom: indigo
-colorTo: blue
-sdk: gradio
-sdk_version: "5.38.0"
-app_file: app.py
-pinned: false
----
-
 # 📄 Resume ATS Analyzer
 
 [![Open in Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Open%20in%20Spaces-blue?logo=huggingface&logoColor=white)](https://huggingface.co/spaces/Gauravp1101/resume-ats-analyzer)
@@ -32,7 +21,7 @@ Built with **Gradio**, **SentenceTransformers**, and a custom **skills taxonomy*
 ## 🛠️ Run locally
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
+git clone https://github.com/GauravP1101/resume-ats-analyzer.git
 cd <your-repo>
 python -m venv .venv
 # Activate venv:
