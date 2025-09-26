@@ -1,6 +1,11 @@
 # 📄 Resume ATS Analyzer
 
 [![Open in Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Open%20in%20Spaces-blue?logo=huggingface&logoColor=white)](https://huggingface.co/spaces/Gauravp1101/resume-ats-analyzer)
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python&logoColor=white)
+![Gradio](https://img.shields.io/badge/Gradio-UI-orange?logo=gradio&logoColor=white)
+![SentenceTransformers](https://img.shields.io/badge/SentenceTransformers-NLP-green?logo=huggingface&logoColor=white)
+![PyMuPDF](https://img.shields.io/badge/PyMuPDF-PDF-red?logo=adobeacrobatreader&logoColor=white)
+![Deployment](https://img.shields.io/badge/Deploy-HuggingFace%20Spaces-yellow?logo=huggingface&logoColor=white)
 
 A smart **Resume Analyzer** that evaluates resumes against job descriptions, highlights missing ATS keywords, and generates a **calibrated ATS score**.  
 Designed to help job seekers improve their resumes for **Applicant Tracking Systems (ATS)** used by recruiters.
@@ -9,28 +14,13 @@ Designed to help job seekers improve their resumes for **Applicant Tracking Syst
 
 ## ✨ Features
 
-- 📑 **Resume Parsing**  
-  - Fast parsing with **PyMuPDF**  
-  - **PyPDF2** as a fallback for better compatibility  
-
-- 🧠 **AI-Powered Embeddings**  
-  - Uses `all-MiniLM-L6-v2` from **Sentence Transformers**  
-  - Captures semantic similarity beyond keyword matching  
-
-- 🎯 **Skill Extraction & Matching**  
-  - Custom **skills taxonomy** with canonical forms, aliases, and fuzzy matching  
-  - Detects missing skills and flags overused/common ones  
-
-- ⚖️ **Scoring System**  
-  - Weighted scoring across categories  
-  - Down-weights generic skills  
-  - Caps overemphasized areas  
-
-- 🎨 **User Interface**  
-  - Built with **Gradio**  
-  - **Dark/Light themes** with custom CSS  
-  - **Highlights Tab**: inline `<mark>` for matched skills in both JD & Resume  
-  - **Lenient Toggle**: expands fuzzy matches for ATS-friendly evaluation  
+- 📑 **Resume Parsing** – extracts text from PDF resumes quickly & reliably  
+- 🧠 **AI-Powered Embeddings** – semantic similarity beyond raw keywords  
+- 🎯 **Skill Extraction & Matching** – canonical + aliases + fuzzy matches  
+- ⚖️ **Calibrated ATS Scoring** – weighted categories & caps for balance  
+- 🎨 **Modern Interface** – responsive UI with dark/light mode  
+- 🔍 **Highlights Tab** – inline `<mark>` for matched/missing skills  
+- ✅ **Lenient Toggle** – expands fuzzy matching for ATS-friendly evaluation  
 
 ---
 
@@ -40,7 +30,6 @@ Designed to help job seekers improve their resumes for **Applicant Tracking Syst
 [**Resume ATS Analyzer – HuggingFace**](https://huggingface.co/spaces/Gauravp1101/resume-ats-analyzer)
 
 ---
-
 ## 🚀 Getting Started
 
 ### 1. Clone Repository
