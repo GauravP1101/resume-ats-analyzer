@@ -30,6 +30,12 @@ Designed to help job seekers improve their resumes for **Applicant Tracking Syst
 [**Resume ATS Analyzer – HuggingFace**](https://huggingface.co/spaces/Gauravp1101/resume-ats-analyzer)
 
 ---
+## 📊 Dashboard Preview
+
+Here’s how the analyzer looks in action:
+
+![Dashboard](dashboard.png)
+---
 ## 🚀 Getting Started
 
 ### 1. Clone Repository
