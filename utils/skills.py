@@ -134,66 +134,70 @@ TAXONOMY: Dict[str, Set[str]] = {
     "Experiment Tracking": {"exp tracking"},
 }
 
-# Softer category weights (de-tuned)
+# ------------------------ Conservative model settings --------------------------
+# Softer category weights (strongly de-tuned to avoid JD overfit)
 CATEGORY_WEIGHTS: Dict[str, float] = {
-    "Languages": 0.85,
-    "Frontend": 0.70,
-    "Backend": 0.85,
-    "Databases": 0.80,
-    "Cloud & DevOps": 0.85,
-    "Data / ML / MLOps": 0.90,
-    "NLP / LLM": 0.75,
-    "Monitoring / Analytics": 0.45,
-    "Testing / Practices": 0.50,
+    "Languages": 0.60,
+    "Frontend":  0.55,
+    "Backend":   0.60,
+    "Databases": 0.60,
+    "Cloud & DevOps": 0.60,
+    "Data / ML / MLOps": 0.65,
+    "NLP / LLM": 0.55,
+    "Monitoring / Analytics": 0.35,
+    "Testing / Practices":    0.40,
 }
 
-# Per-skill priors: ubiquitous skills have smaller influence
+# Per-skill priors: push ubiquitous skills down harder
 SKILL_PRIOR: Dict[str, float] = {
     # Dev basics
-    "Git": 0.35,
-    "Agile/Scrum": 0.35,
-    "CI/CD": 0.40,
-    "REST APIs": 0.45,
-    "Debugging": 0.40,
-    "Unit Testing": 0.40,
-    "Integration Testing": 0.40,
+    "Git": 0.25,
+    "Agile/Scrum": 0.30,
+    "CI/CD": 0.30,
+    "REST APIs": 0.35,
+    "Debugging": 0.30,
+    "Unit Testing": 0.30,
+    "Integration Testing": 0.30,
 
     # Cloud basics & logging
-    "AWS": 0.60,
-    "Azure": 0.50,
-    "Google Cloud Platform": 0.50,
-    "Amazon CloudWatch": 0.35,
-    "CloudWatch": 0.35,
-    "Jenkins": 0.45,
-    "GitHub Actions": 0.45,
-    "Docker": 0.55,
-    "Kubernetes": 0.55,
+    "AWS": 0.50,
+    "Azure": 0.45,
+    "Google Cloud Platform": 0.45,
+    "Amazon CloudWatch": 0.30,
+    "CloudWatch": 0.30,
+    "Jenkins": 0.40,
+    "GitHub Actions": 0.40,
+    "Docker": 0.50,
+    "Kubernetes": 0.50,
 
     # Generic data buzzwords
-    "Data Modeling": 0.50,
-    "ETL": 0.50,
-    "Data Warehousing": 0.50,
-    "Data Quality": 0.45,
+    "Data Modeling": 0.40,
+    "ETL": 0.40,
+    "Data Warehousing": 0.40,
+    "Data Quality": 0.40,
 
-    # Analytics platforms commonly mentioned
-    "Tableau": 0.45,
-    "Power BI": 0.45,
+    # Analytics platforms
+    "Tableau": 0.35,
+    "Power BI": 0.35,
 }
 
-# Per-category caps: limit JD influence
+# Per-category caps: fewer JD skills per bucket
 CAT_CAP: Dict[str, int] = {
-    "Languages": 4,
-    "Frontend": 4,
-    "Backend": 4,
-    "Databases": 4,
-    "Cloud & DevOps": 4,
-    "Data / ML / MLOps": 5,
-    "NLP / LLM": 3,
-    "Monitoring / Analytics": 3,
-    "Testing / Practices": 3,
+    "Languages": 3,
+    "Frontend": 3,
+    "Backend": 3,
+    "Databases": 3,
+    "Cloud & DevOps": 3,
+    "Data / ML / MLOps": 4,
+    "NLP / LLM": 2,
+    "Monitoring / Analytics": 2,
+    "Testing / Practices": 2,
 }
 
-# Canonical maps and patterns
+# Global hard ceiling on how many JD skills to consider
+GLOBAL_JD_CAP: int = 14
+
+# ----------------------------- Canonical maps ---------------------------------
 CANONICAL: Set[str] = set(TAXONOMY.keys())
 ALIAS2CANON: Dict[str, str] = {}
 for canon, aliases in TAXONOMY.items():
@@ -205,7 +209,7 @@ for canon, aliases in TAXONOMY.items():
 EXACT_PATTERNS: Dict[str, re.Pattern] = {
     canon: re.compile(rf"(?<![#\w]){re.escape(canon)}(?![-\w])", re.IGNORECASE) for canon in CANONICAL
 }
-for alias, canon in ALIAS2CANON.items():
+for alias, canon in list(ALIAS2CANON.items()):
     if alias == canon.lower():
         continue
     EXACT_PATTERNS[f"{canon}__{alias}"] = re.compile(
@@ -230,6 +234,11 @@ def _ngrams(words: List[str], n: int) -> List[str]:
 
 # ----------------------------- Extraction -------------------------------------
 def extract_skills(text: str) -> List[str]:
+    """
+    Extract skills from arbitrary text (resume or JD) using:
+    1) exact/alias hits, then
+    2) conservative fuzzy windows (for extraction ONLY; JD pipeline later avoids fuzzy).
+    """
     if not text:
         return []
     text_clean = _clean_text(text)
@@ -241,7 +250,7 @@ def extract_skills(text: str) -> List[str]:
         if pat.search(text_clean):
             found.add(canon)
 
-    # 2) fuzzy windows (for extraction only)
+    # 2) conservative fuzzy windows (used when caller wants fuzzy — resume side)
     tokens = [_normalize_token(t) for t in re.findall(r"[A-Za-z0-9+.#]+", text_clean)]
     grams = set(tokens)
     for n in (2, 3):
@@ -255,12 +264,13 @@ def extract_skills(text: str) -> List[str]:
         if t in w:
             return True
         ratio = difflib.SequenceMatcher(a=w, b=t).ratio()
+        # tightened thresholds to reduce spurious matches
         if len(t) >= 10:
-            return ratio >= 0.86
+            return ratio >= 0.90
         elif len(t) >= 6:
-            return ratio >= 0.88
+            return ratio >= 0.93
         else:
-            return ratio >= 0.92
+            return ratio >= 0.96
 
     for canon in CANONICAL:
         targets = {canon.lower(), *[a.lower() for a in TAXONOMY[canon]]}
@@ -295,86 +305,114 @@ def _category_of(canon: str) -> str:
             return cat
     return "Other"
 
-# ----------------------------- Rich analyzer ----------------------------------
+# ---------------------- Conservative JD extractor (exact-only) -----------------
 def extract_jd_skills(text: str) -> List[str]:
     """
-    Extract JD skills conservatively, union base + section hits,
-    then cap per category to avoid overfitting to long JDs.
+    Extract JD skills conservatively: exact/alias matches only (no fuzzy),
+    section-aware, with per-category caps + global cap.
     """
     if not text:
         return []
     text_clean = _clean_text(text)
 
-    base = set(extract_skills(text_clean))
+    # exact/alias only across the whole JD
+    found_exact: Set[str] = set()
+    for key, pat in EXACT_PATTERNS.items():
+        canon = key.split("__", 1)[0]
+        if pat.search(text_clean):
+            found_exact.add(canon)
 
+    # search common sections (still exact-only)
     sections = re.findall(
         r"(Requirements|Qualifications|What you’ll do|What we look for|Preferred|Must have)[:\s]+(.+?)(?=\n[A-Z][^\n]{0,40}:|\Z)",
         text_clean, flags=re.IGNORECASE | re.DOTALL
     )
-    sec_skills: Set[str] = set()
     for _, sec in sections:
-        sec_skills.update(extract_skills(sec))
+        sec_clean = _clean_text(sec)
+        for key, pat in EXACT_PATTERNS.items():
+            canon = key.split("__", 1)[0]
+            if pat.search(sec_clean):
+                found_exact.add(canon)
 
-    combined_sorted = sorted(base | sec_skills)
+    combined_sorted = sorted(found_exact)
 
-    # Apply per-category caps
+    # Apply per-category caps + global cap
     per_cat: Dict[str, int] = {}
     trimmed: List[str] = []
     for s in combined_sorted:
         c = _category_of(s)
-        cap = CAT_CAP.get(c, 4)
+        cap = CAT_CAP.get(c, 3)
         used = per_cat.get(c, 0)
         if used < cap:
             trimmed.append(s)
             per_cat[c] = used + 1
+        if len(trimmed) >= GLOBAL_JD_CAP:
+            break
 
     return trimmed
 
+# ----------------------------- Scoring ----------------------------------------
 def coverage_score(resume_skills: List[str], jd_skills: List[str]) -> Tuple[float, Dict[str, List[str]]]:
+    """
+    Weighted coverage with caps and a JD-length penalty to reduce overfitting.
+    """
     resume_set = {ALIAS2CANON.get(s.lower(), s) for s in resume_skills}
     jd_set     = {ALIAS2CANON.get(s.lower(), s) for s in jd_skills}
 
     detail: Dict[str, List[str]] = {"matched": [], "missing": [], "extra": []}
 
-    # Build per-category lists to apply caps on the JD side
+    # Rebuild per-category and re-cap to be safe
     per_cat_skills: Dict[str, List[str]] = {}
     for s in sorted(jd_set):
         cat = _category_of(s)
         per_cat_skills.setdefault(cat, []).append(s)
 
-    # Apply category caps
-    jd_trimmed: Set[str] = set()
+    jd_trimmed: List[str] = []
     for cat, skills in per_cat_skills.items():
-        cap = CAT_CAP.get(cat, 4)
-        jd_trimmed.update(skills[:cap])
+        cap = CAT_CAP.get(cat, 3)
+        jd_trimmed.extend(skills[:cap])
+
+    # Global cap
+    jd_trimmed = jd_trimmed[:GLOBAL_JD_CAP]
+    jd_trimmed_set = set(jd_trimmed)
 
     # Fill details
-    for s in sorted(jd_trimmed):
+    for s in sorted(jd_trimmed_set):
         if s in resume_set:
             detail["matched"].append(s)
         else:
             detail["missing"].append(s)
-    for s in sorted(resume_set - jd_trimmed):
+    for s in sorted(resume_set - jd_trimmed_set):
         detail["extra"].append(s)
 
-    # Weighted scoring: category weights * per-skill prior
+    # Weighted scoring with JD length penalty
     total_weight = 0.0
     got_weight   = 0.0
-    for s in jd_trimmed:
-        cat_w = CATEGORY_WEIGHTS.get(_category_of(s), 0.8)
-        skill_w = SKILL_PRIOR.get(s, 1.0)
+    for s in jd_trimmed_set:
+        cat_w = CATEGORY_WEIGHTS.get(_category_of(s), 0.55)
+        skill_w = SKILL_PRIOR.get(s, 0.80)  # default < 1 to avoid inflation
         w = cat_w * skill_w
         total_weight += w
         if s in resume_set:
             got_weight += w
 
-    score = 0.0 if total_weight == 0 else round(100.0 * got_weight / total_weight, 2)
+    # Length penalty: normalize very long JDs (<=12 has no penalty)
+    L = max(1, len(jd_trimmed_set))
+    penalty = min(1.0, 12.0 / L)  # <=1 if L>12
+
+    score = 0.0 if total_weight == 0 else round(100.0 * (got_weight / total_weight) * penalty, 2)
 
     for k in detail:
         detail[k] = sorted(detail[k])
     return score, detail
 
 def analyze_skills(resume_text: str, jd_text: str) -> Dict[str, object]:
+    """
+    End-to-end analysis:
+      - resume: exact + conservative fuzzy
+      - JD: exact-only + caps + global cap
+      - scoring: conservative weights + JD length penalty
+    """
     rs = extract_skills(resume_text)
     js = extract_jd_skills(jd_text)
     score, detail = coverage_score(rs, js)
@@ -387,7 +425,7 @@ def analyze_skills(resume_text: str, jd_text: str) -> Dict[str, object]:
         "coverage_score": score,
     }
 
-# ========================== NEW: highlighting helpers =========================
+# ========================== Highlighting helpers ===============================
 def _html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 

@@ -6,53 +6,60 @@ from typing import Optional
 # -------------------- Color-aware, accessible SVG gauge --------------------
 def score_badge(
     score: float,
-    label: Optional[str] = None,          # optional: override label
-    subtitle: Optional[str] = None        # optional: small hint under label
+    label: Optional[str] = None,          # optional label override
+    subtitle: Optional[str] = None        # optional hint under the label
 ) -> str:
     """
-    Circular gauge with color-aware ring, ARIA labels, and better dark/color-blind handling.
-    Backward compatible with score_badge(score) calls from app.py.
+    Circular gauge with accessible contrast, color-blind friendly hues,
+    and clean typography. Backward compatible with score_badge(score).
     """
     score = max(0.0, min(100.0, float(score)))
 
-    # Color-blind friendly shades (red/orange/green that work in dark & light)
-    # Thresholds designed for your calibrated scale (<=50: Needs Work, <75: Okay Match).
+    # Thresholds tuned for your calibrated scoring
     if score < 50:
-        color = "#e24a33"  # cb-safe red
+        tone = "danger"
         auto_label = "Needs Work"
     elif score < 75:
-        color = "#ed9f2d"  # cb-safe orange/amber
+        tone = "warning"
         auto_label = "Okay Match"
     else:
-        color = "#2aa876"  # cb-safe green
+        tone = "success"
         auto_label = "Strong Fit"
 
     label = label or auto_label
     subtitle = subtitle or "Calibrated ATS score • Skills-weighted + Semantics"
 
-    radius, stroke = 56, 10
+    radius, stroke = 56, 11
     circumference = 2 * math.pi * radius
     offset = circumference * (1 - score / 100.0)
 
-    # Extra contrast ring for dark mode + focus state for keyboard users
+    # Use CSS variables so colors adapt to light/dark automatically
+    # Gradient is subtle and falls back to solid stroke if not supported
     return f"""
     <div class="score-wrap" role="group" aria-label="ATS score">
       <svg width="140" height="140" viewBox="0 0 140 140" role="img"
            aria-label="ATS score gauge {score:.0f} percent">
         <title>ATS Match {score:.0f}%</title>
         <desc>Higher is better. This score blends semantic similarity and weighted skill coverage.</desc>
+        <defs>
+          <linearGradient id="gauge-{tone}" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%"  stop-color="var(--tone-{tone}-a)"/>
+            <stop offset="100%" stop-color="var(--tone-{tone}-b)"/>
+          </linearGradient>
+        </defs>
         <circle cx="70" cy="70" r="{radius}" fill="none"
                 stroke="var(--gauge-track)" stroke-width="{stroke}" />
         <circle cx="70" cy="70" r="{radius}" fill="none"
-                stroke="{color}" stroke-width="{stroke}" stroke-linecap="round"
+                stroke="url(#gauge-{tone})"
+                stroke-width="{stroke}" stroke-linecap="round"
                 stroke-dasharray="{circumference:.1f}" stroke-dashoffset="{offset:.1f}"
                 transform="rotate(-90 70 70)"/>
         <text x="50%" y="52%" dominant-baseline="middle" text-anchor="middle"
-              class="score-val" style="fill:{color};">{score:.0f}%</text>
+              class="score-val">{score:.0f}%</text>
       </svg>
-      <div>
+      <div class="score-meta">
         <div class="h2">ATS Match Score</div>
-        <div class="score-label" style="color:{color};">{label}</div>
+        <div class="score-label tone-{tone}">{label}</div>
         <div class="hint">{subtitle}</div>
       </div>
     </div>
@@ -61,19 +68,15 @@ def score_badge(
 # -------------------- Small UI atoms --------------------
 def pill(text: str, ok: bool, title: Optional[str] = None) -> str:
     """
-    Skill pill with improved contrast and optional tooltip (title).
-    Backward compatible with pill(text, ok) calls.
+    Skill pill with improved contrast and optional tooltip.
+    Backward compatible with pill(text, ok).
     """
-    bg = "var(--pill-ok-bg)" if ok else "var(--pill-miss-bg)"
-    fg = "var(--pill-ok-fg)" if ok else "var(--pill-miss-fg)"
-    border = "var(--pill-border)"
+    tone = "ok" if ok else "miss"
     title_attr = f" title='{_esc_attr(title)}'" if title else ""
     return (
-        f"<span class='pill' style='background:{bg};color:{fg};border:1px solid {border};'"
-        f"{title_attr}>{_esc_html(text)}</span>"
+        f"<span class='pill pill-{tone}'{title_attr}>{_esc_html(text)}</span>"
     )
 
-# Optional helpers (you can ignore if not needed)
 def meter(label: str, value_pct: float, hint: Optional[str] = None) -> str:
     """
     Compact horizontal meter (for showing coverage vs similarity, etc.)
@@ -100,90 +103,133 @@ def stat_row(items: list[tuple[str, str]]) -> str:
     )
     return f"<div class='stat-row'>{cells}</div>"
 
-# -------------------- Global CSS (light + dark) --------------------
+# -------------------- Global CSS (light + dark, hi-contrast) --------------------
 def base_css() -> str:
     """
-    Clean, accessible palette + thin borders + distinctive result backgrounds.
-    Adds: focus styles, reduced motion support, scrollbar polish, gauge track var,
-    color-blind friendly tweaks. Backward compatible with your app.py layout.
+    Refined palette, spacing, typography, and component polish.
+    - Color system with brand/success/warn/danger
+    - Dark mode + reduced motion + high-contrast support
+    - Softer shadows & subtle borders
+    - Cleaner inputs, tabs, buttons, cards
     """
     return """
     <style>
-      /* --------- Palette --------- */
+      /* --------- Design tokens --------- */
       :root{
-        /* light theme */
-        --bg: #f6f7fb;               /* page background */
-        --panel: #ffffff;            /* cards / form panels */
-        --panel-alt: #f8fafc;        /* result/preview background */
-        --text: #0f172a;             /* slate-900 */
-        --muted: #64748b;            /* slate-500 */
-        --brand: #4f46e5;            /* indigo-600 */
-        --border: #e2e8f0;           /* slate-200 */
-        --shadow: 0 8px 24px rgba(15,23,42,.06);
+        /* Light theme neutrals */
+        --bg:          #f6f7fb;
+        --panel:       #ffffff;
+        --panel-alt:   #f8fafc;
+        --text:        #0f172a;   /* slate-900 */
+        --muted:       #64748b;   /* slate-500 */
+        --border:      #e5e7eb;   /* slate-200 */
+        --shadow:      0 10px 28px rgba(15,23,42,.06);
 
-        --pill-ok-bg:#d1fae5;        /* emerald-100 */
-        --pill-ok-fg:#065f46;        /* emerald-900 */
-        --pill-miss-bg:#fee2e2;      /* red-100 */
-        --pill-miss-fg:#991b1b;      /* red-800 */
-        --pill-border: rgba(0,0,0,.06);
+        /* Brand */
+        --brand:       #4f46e5;   /* indigo-600 */
+        --brand-weak:  #eef2ff;   /* indigo-50 */
 
-        --gauge-track: #e5e7eb;      /* neutral track */
+        /* Status tones (color-blind friendly) */
+        --tone-success:   #2aa876;
+        --tone-success-a: #2aa876;
+        --tone-success-b: #45c39b;
 
-        /* meters */
-        --meter-track: #e5e7eb;
-        --meter-fill: #4f46e5;
+        --tone-warning:   #ed9f2d;
+        --tone-warning-a: #f2a93f;
+        --tone-warning-b: #e3881e;
 
-        /* stat */
-        --stat-k: #64748b;
-        --stat-v: #0f172a;
+        --tone-danger:    #e24a33;
+        --tone-danger-a:  #e24a33;
+        --tone-danger-b:  #ff6a4f;
 
-        /* focus ring */
-        --focus: 0 0 0 3px rgba(79,70,229,.35);
+        --gauge-track:    #e5e7eb;
+
+        /* Pills */
+        --pill-ok-bg:   #d1fae5;  /* emerald-100 */
+        --pill-ok-fg:   #065f46;
+        --pill-miss-bg: #fee2e2;  /* red-100 */
+        --pill-miss-fg: #991b1b;
+        --pill-border:  rgba(0,0,0,.06);
+
+        /* Meters */
+        --meter-track:  #e5e7eb;
+        --meter-fill:   var(--brand);
+
+        /* Stats */
+        --stat-k:       #64748b;
+        --stat-v:       #0f172a;
+
+        /* Focus ring */
+        --focus:        0 0 0 3px rgba(79,70,229,.35);
       }
 
       @media (prefers-color-scheme: dark){
         :root{
-          --bg: #0b1220;             /* deep slate */
-          --panel: #121a2b;          /* card */
-          --panel-alt: #0f182a;      /* result bg (slightly different) */
-          --text: #e6eaf3;
-          --muted: #9aa7bf;
-          --brand: #8ea2ff;
-          --border: #26314a;         /* thin, not glaring white */
-          --shadow: 0 6px 20px rgba(0,0,0,.35);
+          --bg:          #0b1220;
+          --panel:       #111827;  /* slate-900ish */
+          --panel-alt:   #0f182a;
+          --text:        #e6eaf3;
+          --muted:       #9aa7bf;
+          --border:      #26314a;
+          --shadow:      0 8px 24px rgba(0,0,0,.35);
 
-          --pill-ok-bg:#0a2e25;
-          --pill-ok-fg:#7ee4c4;
-          --pill-miss-bg:#321519;
-          --pill-miss-fg:#ffb3ba;
-          --pill-border: rgba(255,255,255,.06);
+          --brand:       #8ea2ff;
+          --brand-weak:  #101739;
 
-          --gauge-track: #1d2740;
+          --tone-success:   #76e4bf;
+          --tone-success-a: #76e4bf;
+          --tone-success-b: #3fcaa2;
 
-          --meter-track: #223150;
-          --meter-fill: #8ea2ff;
+          --tone-warning:   #f2c35b;
+          --tone-warning-a: #f2c35b;
+          --tone-warning-b: #e5a83d;
 
-          --stat-k: #9aa7bf;
-          --stat-v: #e6eaf3;
+          --tone-danger:    #ff8a7a;
+          --tone-danger-a:  #ff8a7a;
+          --tone-danger-b:  #ff6a5a;
+
+          --gauge-track:    #1d2740;
+
+          --pill-ok-bg:   #0a2e25;
+          --pill-ok-fg:   #7ee4c4;
+          --pill-miss-bg: #321519;
+          --pill-miss-fg: #ffb3ba;
+          --pill-border:  rgba(255,255,255,.06);
+
+          --meter-track:  #223150;
+          --meter-fill:   #8ea2ff;
+
+          --stat-k:       #9aa7bf;
+          --stat-v:       #e6eaf3;
         }
       }
 
-      /* --------- Reduced motion --------- */
+      @media (prefers-contrast: more){
+        :root{
+          --border: #94a3b8; /* boost border visibility */
+          --focus:  0 0 0 3px rgba(79,70,229,.65);
+        }
+      }
+
+      /* --------- Motion safety --------- */
       @media (prefers-reduced-motion: reduce) {
         * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition: none !important; }
       }
 
-      /* --------- Base typography & container --------- */
+      /* --------- Base & layout --------- */
       .gradio-container{
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Ubuntu, Cantarell, Helvetica Neue, Arial;
+        font-family: Inter, ui-sans-serif, -apple-system, Segoe UI, Roboto, Noto Sans, Ubuntu, Cantarell, Helvetica Neue, Arial;
         background: var(--bg) !important;
         color: var(--text);
       }
-      .wrap { max-width: 1150px; margin: 0 auto; padding: 0 10px; }
+      .wrap { max-width: 1180px; margin: 0 auto; padding: 0 12px; }
 
       .h1 { font: 800 28px/1.2 Inter, system-ui; letter-spacing:-0.01em; color: var(--text); }
       .h2 { font: 700 18px/1.2 Inter, system-ui; color: var(--text); }
-      .hint { color: var(--muted); font: 400 13px/1.3 Inter, system-ui; }
+      .hint { color: var(--muted); font: 400 13px/1.35 Inter, system-ui; }
+
+      a, .link { color: var(--brand); text-decoration: none; }
+      a:hover, .link:hover { text-decoration: underline; }
 
       /* --------- Cards / Panels --------- */
       .card{
@@ -200,21 +246,21 @@ def base_css() -> str:
         box-shadow: var(--shadow) !important;
       }
 
-      /* --------- Upload box & Textarea --------- */
+      /* --------- Inputs --------- */
       .upload-box .wrap{
         border: 1.5px dashed var(--border);
         border-radius: 12px;
         padding: 20px;
         transition: border .15s ease, background .15s ease;
-        background: transparent;
+        background: var(--panel-alt);
       }
       .upload-box .wrap:hover{
         border-color: var(--brand);
-        background: color-mix(in srgb, var(--panel) 92%, var(--brand) 8%);
+        background: color-mix(in srgb, var(--panel-alt) 85%, var(--brand) 15%);
       }
       .textarea textarea{
-        min-height: 270px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        min-height: 280px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         background: var(--panel-alt) !important;
         border: 1px solid var(--border) !important;
         color: var(--text) !important;
@@ -226,15 +272,18 @@ def base_css() -> str:
         border-color: transparent !important;
       }
 
-      /* --------- Tabs polish --------- */
+      /* --------- Tabs --------- */
       .tabs .tabitem{ padding:6px 0 0; }
       .tabs button[role="tab"]{
         font-weight: 600;
         border-radius: 10px !important;
       }
+      .tabs button[role="tab"][aria-selected="true"]{
+        background: var(--brand-weak);
+        border-color: var(--brand);
+      }
       .tabs button[role="tab"]:focus-visible{
-        box-shadow: var(--focus);
-        outline: none;
+        box-shadow: var(--focus); outline: none;
       }
 
       /* --------- Buttons --------- */
@@ -242,12 +291,13 @@ def base_css() -> str:
         font-weight:700; font-size:16px; padding:12px 16px;
         background: var(--brand);
         border: 1px solid transparent;
+        color: #fff;
         border-radius: 12px !important;
       }
       .btn-lg button:hover{ filter: brightness(0.95); }
       .btn-lg button:focus-visible{ box-shadow: var(--focus); outline: none; }
 
-      /* --------- Result blocks --------- */
+      /* --------- Results / Preview --------- */
       .result-card{
         background: var(--panel-alt);
         border: 1px solid var(--border);
@@ -255,20 +305,12 @@ def base_css() -> str:
         padding: 14px;
       }
       .score-wrap{ display:flex; align-items:center; gap:18px; }
-      .score-val{ font: 800 24px Inter, system-ui; }
+      .score-val{ font: 800 24px Inter, system-ui; fill: var(--text); }
+      .score-label{ font: 700 14px Inter, system-ui; margin-top: 2px; }
+      .score-meta .tone-success{ color: var(--tone-success); }
+      .score-meta .tone-warning{ color: var(--tone-warning); }
+      .score-meta .tone-danger{  color: var(--tone-danger);  }
 
-      /* --------- Pills --------- */
-      .pill{
-        display:inline-block;
-        margin:4px 6px 0 0;
-        padding:6px 10px;
-        border-radius:9999px;
-        font:600 12px Inter, system-ui;
-        transition: transform .15s ease;
-      }
-      .pill:hover{ transform: translateY(-1px); }
-
-      /* --------- Previews --------- */
       pre{
         background: var(--panel-alt) !important;
         border: 1px solid var(--border) !important;
@@ -277,6 +319,20 @@ def base_css() -> str:
         padding: 14px !important;
         overflow:auto;
       }
+
+      /* --------- Pills --------- */
+      .pill{
+        display:inline-block;
+        margin:4px 6px 0 0;
+        padding:6px 10px;
+        border-radius:9999px;
+        font:600 12px Inter, system-ui;
+        transition: transform .15s ease, background .15s ease;
+        border: 1px solid var(--pill-border);
+      }
+      .pill:hover{ transform: translateY(-1px); }
+      .pill-ok{ background: var(--pill-ok-bg); color: var(--pill-ok-fg); }
+      .pill-miss{ background: var(--pill-miss-bg); color: var(--pill-miss-fg); }
 
       /* --------- Meters --------- */
       .meter{ margin-top:10px; }
@@ -291,14 +347,14 @@ def base_css() -> str:
 
       /* --------- Stats --------- */
       .stat-row{
-        display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 10px; margin-top: 10px;
+        display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px; margin-top: 12px;
       }
       .stat{
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 10px 12px;
+        padding: 12px 14px;
       }
       .stat-k{ color: var(--stat-k); font: 600 12px Inter, system-ui; }
       .stat-v{ color: var(--stat-v); font: 700 14px Inter, system-ui; }
@@ -320,5 +376,4 @@ def _esc_html(s: str | None) -> str:
 def _esc_attr(s: str | None) -> str:
     if s is None:
         return ""
-    # quotes also need escaping for attributes
     return (_esc_html(s).replace('"', "&quot;").replace("'", "&#39;"))

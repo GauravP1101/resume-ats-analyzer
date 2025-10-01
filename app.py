@@ -1,4 +1,4 @@
-# app.py — fast UI + Highlights tab + Lenient matching toggle
+# app.py — ATS Resume Analyzer with conservative scoring & polished UI
 from __future__ import annotations
 
 import os
@@ -9,7 +9,17 @@ from typing import List, Set
 import gradio as gr
 import numpy as np
 import torch
-from sentence_transformers import SentenceTransformer
+
+# Sentence embeddings (optional, robust fallback if not available)
+try:
+    from sentence_transformers import SentenceTransformer
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+    model.max_seq_length = 256
+    _emb_ok = True
+except Exception:
+    model = None
+    _emb_ok = False
 
 # Prefer PyMuPDF (much faster). Fallback to PyPDF2.
 try:
@@ -22,25 +32,19 @@ except Exception:
 # --- skills helpers -----------------------------------------------------------
 from utils.skills import (
     extract_skills,
-    compare_skills,
-    analyze_skills,                 # weighted coverage
-    highlight_text_with_skills,     # highlighter helpers
+    extract_jd_skills,
+    analyze_skills,
+    highlight_text_with_skills,
 )
 
 # --- UI atoms -----------------------------------------------------------------
 from utils.ui_enhancements import score_badge, pill, base_css
 
 
-# ============================ Runtime / Model =================================
-# Cap threads to avoid CPU oversubscription
+# ============================ Runtime / Threads ================================
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
-# speed-up with shorter context
-model.max_seq_length = 256
 
 
 # =============================== Utilities ====================================
@@ -65,6 +69,8 @@ def chunk_text_tokens(text: str, max_tokens: int = 256, overlap: int = 32):
     """
     Token-aware chunking keeps chunk counts low for faster encoding.
     """
+    if not _emb_ok:
+        return [text]
     text = (text or "").strip()
     if not text:
         return []
@@ -92,7 +98,7 @@ def _encode_cached(key: str, *texts) -> np.ndarray:
     with torch.no_grad():
         emb = model.encode(
             list(texts),
-            batch_size=64,                 # tune to 16/32 if RAM is tight
+            batch_size=32,
             convert_to_numpy=True,
             normalize_embeddings=True,
             show_progress_bar=False,
@@ -101,7 +107,7 @@ def _encode_cached(key: str, *texts) -> np.ndarray:
 
 
 def get_embeddings_cached(texts: List[str], key_prefix: str) -> np.ndarray:
-    if not texts:
+    if not texts or not _emb_ok:
         return np.zeros((0, 384), dtype=np.float32)
     key = key_prefix + ":" + _sha1("||".join(texts))
     return _encode_cached(key, *texts)
@@ -126,7 +132,7 @@ def _esc(s: str) -> str:
 
 
 # ---------- Lenient matching helper -------------------------------------------
-def _lenient_unify(resume_sk: Set[str], jd_sk: Set[str], ratio: float = 0.80) -> Set[str]:
+def _lenient_unify(resume_sk: Set[str], jd_sk: Set[str], ratio: float = 0.88) -> Set[str]:
     """
     Expand 'matched' by allowing near-equal (fuzzy) skill names.
     This makes the analyzer a bit less rigorous (ATS-friendly).
@@ -148,25 +154,17 @@ def _lenient_unify(resume_sk: Set[str], jd_sk: Set[str], ratio: float = 0.80) ->
 def calibrate_confidence(similarity_pct: float, coverage_pct: float, lenient: bool) -> float:
     """
     Blend embedding similarity with weighted skill coverage from skills.py,
-    then compress so typical blends sit in the 40s (not inflated).
+    then compress so typical blends don’t inflate.
     """
-    # Emphasize coverage (de-tuned, capped) over embeddings
-    blended = 0.35 * float(similarity_pct) + 0.65 * float(coverage_pct)
-
-    # Compression & offset to tame high numbers from keyword-y JDs
-    # Examples: blended 60 -> ~41; 50 -> ~33; 70 -> ~50
-    score = 0.85 * blended - 10.0
-
-    # Lenient toggle gives a small nudge, not a big inflation
+    blended = 0.30 * float(similarity_pct) + 0.70 * float(coverage_pct)
+    score = 0.82 * blended - 12.0
     if lenient:
-        score += 1.5
-
+        score += 1.0
     return round(max(0.0, min(100.0, score)), 2)
 
 
 # ============================== Core Handler ==================================
 def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
-    # Guards
     if pdf_file is None:
         return ("<b style='color:#991b1b'>Please upload a PDF resume.</b>", "", "", "", "", "")
     jd_text = (jd_text or "").strip()
@@ -178,7 +176,7 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
     if not resume_text.strip():
         return ("<b style='color:#991b1b'>Error: Resume text could not be extracted. Try another PDF.</b>", "", "", "", "", "")
 
-    # Token-chunking (fast)
+    # Token-chunking
     resume_chunks = chunk_text_tokens(resume_text, max_tokens=256, overlap=32)
     jd_chunks     = chunk_text_tokens(jd_text,     max_tokens=256, overlap=32)
 
@@ -187,27 +185,23 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
 
     # Skills
     resume_sk = set(extract_skills(resume_text))
-    try:
-        from utils.skills import extract_jd_skills
-        jd_sk = set(extract_jd_skills(jd_text))
-    except Exception:
-        jd_sk = set(extract_skills(jd_text))
+    jd_sk = set(extract_jd_skills(jd_text))
 
-    # Matched / missing (lenient if toggle is on)
+    # Matched / missing
     matched = sorted(_lenient_unify(resume_sk, jd_sk) if lenient else (resume_sk & jd_sk))
     missing = sorted(jd_sk - set(matched))
     total_jd = len(jd_sk)
 
-    # Weighted coverage (from skills.py)
+    # Weighted coverage
     coverage_line = ""
     try:
         report = analyze_skills(resume_text, jd_text)
         cov = float(report.get("coverage_score", 0.0))
         if lenient and cov < 100:
-            cov = min(100.0, round(cov + 1.0, 2))  # tiny nudge only
+            cov = min(100.0, round(cov + 0.5, 2))
         coverage_line = f"<div class='hint'>Weighted skill coverage: <b>{cov}%</b>{' • Lenient' if lenient else ''}</div>"
     except Exception:
-        cov = 0.0  # fallback
+        cov = 0.0
 
     # Final calibrated ATS score
     final_score = calibrate_confidence(_similarity_pct, cov, lenient)
@@ -216,7 +210,6 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
     j_words = len(jd_text.split())
 
     # ---------------- UI HTML blocks ----------------
-    # Overview
     overview = f"""
     {score_badge(final_score)}
     <div class="result-card" style="margin-top:12px">
@@ -234,7 +227,6 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
     </div>
     """
 
-    # Missing skills panel
     if missing:
         missing_md = (
             "<div class='h2' style='color:#991b1b'>Missing Skills for ATS</div>"
@@ -245,10 +237,12 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
     else:
         missing_md = "<div style='color:#065f46;font:600 14px Inter,system-ui'>✔ All JD skills are represented in your resume.</div>"
 
-    # Highlights (inline <mark>) for matched skills
+    # Highlights (inline <mark>)
     try:
-        resume_h_html, _ = highlight_text_with_skills(resume_text, matched, color="#fef3c7", border="#f59e0b")
-        jd_h_html, _     = highlight_text_with_skills(jd_text, matched, color="#dbf4ff", border="#38bdf8")
+        resume_h_html, _ = highlight_text_with_skills(resume_text, matched,
+                                                      color="var(--brand-weak)", border="var(--brand)")
+        jd_h_html, _     = highlight_text_with_skills(jd_text, matched,
+                                                      color="rgba(142,162,255,.18)", border="var(--brand)")
         highlights_html = f"""
         <div class='h2'>Highlighted Resume (matched skills)</div>
         <pre style="white-space:pre-wrap">{resume_h_html}</pre>
@@ -258,7 +252,7 @@ def analyze(pdf_file, jd_text: str, show_resume: bool, lenient: bool):
     except Exception:
         highlights_html = ""
 
-    # Preview & Raw (optional)
+    # Resume preview
     section_md = ""
     resume_view = ""
     if show_resume:
@@ -295,7 +289,6 @@ with gr.Blocks(theme=gr.themes.Soft(), css=base_css()) as demo:
     </div>
     """)
 
-    # Inputs
     with gr.Row(elem_classes=["wrap"], equal_height=True):
         with gr.Column(scale=1):
             with gr.Group(elem_classes=["card", "upload-box"]):
@@ -312,9 +305,8 @@ with gr.Blocks(theme=gr.themes.Soft(), css=base_css()) as demo:
 
     with gr.Row(elem_classes=["wrap"]):
         show_resume = gr.Checkbox(label="Show full resume text in output", value=False)
-        lenient = gr.Checkbox(label="Lenient matching (ATS-friendly)", value=True)
+        lenient = gr.Checkbox(label="Lenient matching (ATS-friendly)", value=False)
 
-    # Results
     with gr.Tabs(elem_classes=["wrap", "tabs"]):
         with gr.TabItem("Overview"):       out_overview  = gr.HTML()
         with gr.TabItem("Missing Skills"): out_missing   = gr.HTML()
